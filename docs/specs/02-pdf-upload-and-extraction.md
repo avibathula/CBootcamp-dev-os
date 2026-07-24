@@ -76,7 +76,7 @@ export const STANDARD_TERMS: Record<'nda' | 'msa', string[]> = {
     - Path: `contracts/{user_id}/{contract_id}/{file_name}`
     - On success: `UPDATE contracts SET status='ready', file_path=<path>`
     - On failure: log the error server-side; `UPDATE contracts SET status='ready', file_path=NULL`
-    - Either branch must complete before the client's next request (`/api/process-contract`) reads `status`; use `await` internally within the route handler (Vercel serverless functions do not continue executing after the response is sent) — i.e. this step is awaited by the server, just structured so a slow/failed Storage upload never blocks or fails the user-facing response's *content*, only its timing. Concretely: `await` the Storage upload and status update before returning, but never surface a Storage failure as a request failure.
+    - Either branch must complete before the client's next request (`/api/process-contract`) reads `status`; use `await` internally within the route handler (serverless functions do not continue executing after the response is sent) — i.e. this step is awaited by the server, just structured so a slow/failed Storage upload never blocks or fails the user-facing response's *content*, only its timing. Concretely: `await` the Storage upload and status update before returning, but never surface a Storage failure as a request failure.
 11. Return 200 with `{ contract_id, standard_terms: STANDARD_TERMS[contract_type], page_count }`
 
 ### Response contracts

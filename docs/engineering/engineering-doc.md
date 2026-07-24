@@ -46,14 +46,14 @@ Business professionals at SMBs routinely sign NDAs and MSAs without fully unders
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 14 (App Router) + Tailwind CSS |
-| Backend | Next.js API Routes (deployed to Vercel) |
+| Backend | Next.js API Routes (deployed to Netlify) |
 | Auth | Supabase Auth (email/password) |
 | Database | Supabase PostgreSQL with Row-Level Security |
 | File Storage | Supabase Storage (bucket: `contracts`) |
 | AI | GPT-4o via OpenAI API (JSON mode) |
 | PDF Parsing | `pdf-parse` (Node.js, server-side, run once at upload) |
 | PDF Rendering | PDF.js (client-side) with paginated text-viewer fallback |
-| Hosting | Vercel (frontend + API routes) + Supabase (DB + Storage) |
+| Hosting | Netlify (frontend + API routes via the Netlify Next.js runtime) + Supabase (DB + Storage) |
 | State Management | React Context (auth) + SWR (server state) |
 
 ### Success Criteria
@@ -399,7 +399,7 @@ app/layout.tsx
 
 | Tool | Purpose |
 |---|---|
-| Next.js API Routes (`/app/api/*/route.ts`) | Thin serverless handlers; deployed to Vercel |
+| Next.js API Routes (`/app/api/*/route.ts`) | Thin serverless handlers; deployed to Netlify |
 | `@supabase/supabase-js` (service role) | Server-side DB writes; bypasses RLS for trusted operations |
 | `pdf-parse` | Node.js PDF text extraction |
 | `openai` (npm) | Official OpenAI SDK; GPT-4o calls |
@@ -479,7 +479,7 @@ Return { terms_count }
             ┌────────────┼────────────────┐
             │            │                │
       Supabase Auth   SWR fetches      API Routes
-      (sign in/up)  (contracts,       (Vercel serverless)
+      (sign in/up)  (contracts,       (Netlify serverless)
                     key_terms,              │
                     chat_messages)     ┌───┴───────────┐
                          │            │               │
@@ -491,7 +491,7 @@ Return { terms_count }
 ```
 
 #### Rate Limiting
-- Vercel Edge middleware: max 10 `/api/process-contract` calls per user per hour
+- Edge middleware (Next.js middleware on the platform edge): max 10 `/api/process-contract` calls per user per hour
 - Max 60 `/api/chat` calls per user per hour
 - Returns 429 with `Retry-After` header and human-readable message
 
@@ -905,7 +905,7 @@ CONTRACT TEXT:
 
 ## 9. API Specification
 
-All routes are Next.js API Routes at `/app/api/*/route.ts`, deployed to Vercel.
+All routes are Next.js API Routes at `/app/api/*/route.ts`, deployed to Netlify.
 
 **Common headers (all protected routes):**
 ```

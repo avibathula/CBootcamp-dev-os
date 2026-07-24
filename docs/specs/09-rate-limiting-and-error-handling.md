@@ -31,9 +31,9 @@ export async function requireAuth(request: Request): Promise<AuthResult>
 
 ## 3. Rate limiting
 
-**Mechanism:** Vercel Edge Middleware (`middleware.ts`, extending the auth-guard middleware from spec 01) intercepts `/api/process-contract` and `/api/chat` before they reach the route handler.
+**Mechanism:** Next.js edge middleware (`middleware.ts`, extending the auth-guard middleware from spec 01) intercepts `/api/process-contract` and `/api/chat` before they reach the route handler. This runs on the hosting platform's edge (Netlify Edge Functions in this project).
 
-**Store:** In-memory per-instance counter is insufficient on serverless (no shared state across invocations) — use Vercel KV (or Upstash Redis, same API) with a sliding-window counter keyed by `user_id`.
+**Store:** In-memory per-instance counter is insufficient on serverless (no shared state across invocations), so use Upstash Redis with a sliding-window counter keyed by `user_id`. Upstash is platform-neutral and is what the implementation uses.
 
 ```typescript
 // lib/api/rateLimit.ts
