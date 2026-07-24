@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env
+.env.*
+!.env.local.example
+.DS_Store
+/nextjs-app/e2e/.auth/
+/nextjs-app/playwright-report/
+/nextjs-app/test-results/
+/nextjs-app/blob-report/
