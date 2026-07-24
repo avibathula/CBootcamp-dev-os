@@ -8,3 +8,7 @@ node_modules/
 /nextjs-app/playwright-report/
 /nextjs-app/test-results/
 /nextjs-app/blob-report/
+
+# local tooling / build cache
+.claude/settings.local.json
+nextjs-app/tsconfig.tsbuildinfo
