@@ -57,14 +57,16 @@ export function ResultsLayout({ contract, signedUrl, existingFeedback }: Results
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setIsChatOpen((open) => !open)}
-        aria-label={isChatOpen ? 'Close chat' : 'Open chat'}
-        className="fixed bottom-16 right-6 z-20 flex h-14 w-14 items-center justify-center rounded-full border-2 border-blue-600 bg-blue-500 text-h5 text-white transition-colors duration-fast ease-out hover:bg-blue-600"
-      >
-        💬
-      </button>
+      {!isChatOpen && (
+        <button
+          type="button"
+          onClick={() => setIsChatOpen(true)}
+          aria-label="Open chat"
+          className="fixed bottom-16 right-6 z-20 flex h-14 w-14 items-center justify-center rounded-full border-2 border-blue-600 bg-blue-500 text-h5 text-white transition-colors duration-fast ease-out hover:bg-blue-600"
+        >
+          💬
+        </button>
+      )}
     </div>
   )
 }

@@ -18,6 +18,13 @@ test.describe('Chat hallucination guardrail', () => {
     await chatInput.fill('What is the exact total contract value in dollars?')
     await page.getByRole('button', { name: 'Send message' }).click()
 
-    await expect(page.getByText('I cannot find this in the document.')).toBeVisible({ timeout: 20_000 })
+    // "contract" and "dollars" both match the contract-marker set, no history
+    // markers present, so this must classify as 'contract' — the memory
+    // layer must not have weakened the pre-existing hallucination guard for
+    // that classification: the refusal phrase is exactly as before.
+    const assistantMessage = page.getByTestId('assistant-message').first()
+    await expect(assistantMessage).toBeVisible({ timeout: 20_000 })
+    await expect(assistantMessage).toHaveAttribute('data-source-type', 'contract')
+    await expect(page.getByText('I cannot find this in the document.')).toBeVisible()
   })
 })

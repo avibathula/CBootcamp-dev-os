@@ -57,12 +57,20 @@ export type ChatSession = {
 
 export type ChatRole = 'user' | 'assistant'
 
+// Query classification for the conversation memory layer (docs/specs/06 §4).
+// 'contract': contract text + last 10 turns. 'history': conversation only, no
+// contract text, up to 20 turns. 'both': contract text + last 10 turns, with
+// per-fact source attribution. Ambiguous queries fall back to 'both'.
+export type QueryClassification = 'contract' | 'history' | 'both'
+
 export type ChatMessage = {
   id: string
   session_id: string
   user_id: string
   role: ChatRole
   content: string
+  // Set on assistant messages only — null for user messages.
+  source_type: QueryClassification | null
   created_at: string
 }
 
@@ -105,6 +113,7 @@ export type ChatRequest = {
 export type ChatResponse = {
   message: string
   session_id: string
+  source_type: QueryClassification
 }
 
 export type UpdateTermRequest = {

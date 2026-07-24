@@ -152,12 +152,15 @@ create policy "users_own_chat_sessions" on chat_sessions
 -- Table: chat_messages
 -- ============================================================================
 create table if not exists chat_messages (
-  id         uuid primary key default gen_random_uuid(),
-  session_id uuid not null references chat_sessions(id) on delete cascade,
-  user_id    uuid not null references auth.users(id) on delete cascade,
-  role       text not null check (role in ('user', 'assistant')),
-  content    text not null,
-  created_at timestamptz not null default now()
+  id          uuid primary key default gen_random_uuid(),
+  session_id  uuid not null references chat_sessions(id) on delete cascade,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  role        text not null check (role in ('user', 'assistant')),
+  content     text not null,
+  -- Query classification from the conversation memory layer (docs/specs/06
+  -- §4). Set on assistant messages only; null for user messages.
+  source_type text check (source_type in ('contract', 'history', 'both')),
+  created_at  timestamptz not null default now()
 );
 
 create index if not exists idx_chat_messages_session_id on chat_messages (session_id, created_at asc);

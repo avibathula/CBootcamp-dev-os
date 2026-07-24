@@ -3,11 +3,13 @@ import { requireAuth } from '@/lib/api/requireAuth'
 import { checkRateLimit } from '@/lib/api/rateLimit'
 import { Errors, logServerError } from '@/lib/api/errors'
 import { createServiceRoleClient } from '@/lib/supabase/server'
-import { buildChatMessages, callChat } from '@/lib/openai/chat'
+import { buildChatMessages, callChat, classifyQuery, HISTORY_TURN_LIMIT } from '@/lib/openai/chat'
 import type { ChatRequest, ChatResponse } from '@/types'
 
 const MAX_MESSAGE_LENGTH = 4000
-const MAX_HISTORY_MESSAGES = 200
+// The largest window any classification needs (HISTORY's 20 turns); fetched
+// once per request and trimmed further by buildChatMessages per classification.
+const MAX_HISTORY_MESSAGES = HISTORY_TURN_LIMIT * 2
 
 export async function POST(request: Request) {
   const auth = await requireAuth(request)
@@ -35,6 +37,10 @@ export async function POST(request: Request) {
     if (message.length > MAX_MESSAGE_LENGTH) {
       return Errors.badRequest(`message must be ${MAX_MESSAGE_LENGTH} characters or fewer.`)
     }
+
+    // Classification depends only on the message text — safe to compute
+    // before touching the DB, and needed up front to size the history fetch.
+    const classification = classifyQuery(message)
 
     const { data: contract, error: contractError } = await supabase
       .from('contracts')
@@ -69,11 +75,16 @@ export async function POST(request: Request) {
       sessionId = newSession.id
     }
 
-    const { data: historyRows, error: historyError } = await supabase
+    // CRITICAL: history is loaded here, before the new user message is ever
+    // written, so the classifier and the model never see the current
+    // question as part of its own history. Fetched newest-first so a long
+    // conversation still yields the *most recent* turns, then reversed back
+    // to ascending order for the prompt.
+    const { data: recentDesc, error: historyError } = await supabase
       .from('chat_messages')
       .select('role, content')
       .eq('session_id', sessionId)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(MAX_HISTORY_MESSAGES)
 
     if (historyError) {
@@ -81,7 +92,8 @@ export async function POST(request: Request) {
       return Errors.internal()
     }
 
-    const messages = buildChatMessages(contract.contract_text, historyRows ?? [], message)
+    const history = (recentDesc ?? []).slice().reverse()
+    const messages = buildChatMessages(classification, contract.contract_text, history, message)
 
     let assistantReply: string
     try {
@@ -93,10 +105,19 @@ export async function POST(request: Request) {
 
     // Monitoring signal only (docs/specs/06 §7) — not a blocking retry, to
     // avoid doubling chat latency/cost for what is usually a rare model slip.
-    if (!/\[Page \d+\]/.test(assistantReply) && !assistantReply.includes('I cannot find this in the document')) {
+    // Expected attribution tag depends on classification.
+    const hasExpectedTag =
+      classification === 'history'
+        ? /\[From conversation\]/.test(assistantReply)
+        : /\[Page \d+\]/.test(assistantReply) ||
+          (classification === 'both' && /\[From conversation\]/.test(assistantReply))
+    const isRefusal = /I cannot find this in (the document|our conversation|the document or our conversation)/.test(
+      assistantReply
+    )
+    if (!hasExpectedTag && !isRefusal) {
       logServerError(
-        'chat:missing-citation',
-        new Error(`Response lacked a page citation: "${assistantReply.slice(0, 200)}"`)
+        'chat:missing-attribution',
+        new Error(`[${classification}] Response lacked the expected attribution tag: "${assistantReply.slice(0, 200)}"`)
       )
     }
 
@@ -107,14 +128,21 @@ export async function POST(request: Request) {
       logServerError('chat:insert-user', insertUserError)
     }
 
-    const { error: insertAssistantError } = await supabase
-      .from('chat_messages')
-      .insert({ session_id: sessionId, user_id: user.id, role: 'assistant', content: assistantReply })
+    const { error: insertAssistantError } = await supabase.from('chat_messages').insert({
+      session_id: sessionId,
+      user_id: user.id,
+      role: 'assistant',
+      content: assistantReply,
+      source_type: classification,
+    })
     if (insertAssistantError) {
       logServerError('chat:insert-assistant', insertAssistantError)
     }
 
-    return NextResponse.json<ChatResponse>({ message: assistantReply, session_id: sessionId }, { status: 200 })
+    return NextResponse.json<ChatResponse>(
+      { message: assistantReply, session_id: sessionId, source_type: classification },
+      { status: 200 }
+    )
   } catch (error) {
     logServerError('chat', error)
     return Errors.internal()

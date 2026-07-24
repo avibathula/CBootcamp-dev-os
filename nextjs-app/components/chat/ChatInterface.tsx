@@ -76,14 +76,20 @@ export function ChatInterface({ contractId, onCitationClick }: ChatInterfaceProp
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-body-sm text-text-secondary">
-            Ask a question about this contract — answers are grounded in the document with page citations.
+            Ask a question about this contract or our conversation so far — answers are grounded in the
+            document with page citations, or in what we&apos;ve discussed.
           </p>
         )}
         {messages.map((message) =>
           message.role === 'user' ? (
             <UserMessage key={message.id} content={message.content} />
           ) : (
-            <AssistantMessage key={message.id} content={message.content} onCitationClick={onCitationClick} />
+            <AssistantMessage
+              key={message.id}
+              content={message.content}
+              sourceType={message.source_type}
+              onCitationClick={onCitationClick}
+            />
           )
         )}
         {isSending && (

@@ -262,28 +262,36 @@ Step 4: Results Page
 User types question (e.g. "What happens if I breach this NDA?")
   → POST /api/chat { contract_id, message: "..." }
     → Server:
-        1. Fetch contracts.contract_text from DB
-        2. Fetch all chat_messages for this session (up to 200, ascending)
-        3. Classify query: 'contract' | 'history' | 'both' (inline logic, no extra API call)
-        4. Build messages array:
+        1. Classify query: 'contract' | 'history' | 'both' (inline heuristic, no extra API call) —
+           computed first, before any DB access, since it determines what gets retrieved
+        2. Fetch contracts.contract_text from DB (fetched unconditionally for ownership/status
+           validation; only included in the prompt for 'contract'/'both')
+        3. Fetch chat_messages for this session — up to 40 most-recent messages (newest-first,
+           then reversed to ascending) — BEFORE inserting the new user message, so the
+           classifier and model never see the current question as prior history
+        4. Build messages array (classification-specific system prompt + trimmed history):
            [
-             { role: "system", content: "<grounding prompt>" },
-             { role: "user", content: "<contract_text>" },
-             ...chat history...,
+             { role: "system", content: "<classification-specific grounding prompt, with
+                                          contract_text interpolated for contract/both>" },
+             ...chat history (10 turns for contract/both, 20 turns for history)...,
              { role: "user", content: "<user question>" }
            ]
         5. Call GPT-4o (temp=0.4, max_tokens=1000)
         6. INSERT user message into chat_messages (role='user')
-        7. INSERT AI response into chat_messages (role='assistant')
-        8. Return { message: "Based on the document... [Page X]" }
+        7. INSERT AI response into chat_messages (role='assistant', source_type=<classification>)
+        8. Return { message: "Based on the document... [Page X]", session_id, source_type }
     → ChatInterface appends messages to conversation view
       → User messages: right-aligned
-      → AI responses: left-aligned, with "[Page X]" link that triggers PDF viewer navigation
-      → "Source: Page X" citation is clickable
+      → AI responses: left-aligned, with a source badge (Contract / Conversation / Contract +
+        Conversation) and inline "[Page X]" / "[From conversation]" tags
+      → "[Page X]" citations are clickable and trigger PDF viewer navigation; "[From
+        conversation]" tags are styled but not clickable (nothing to navigate to)
 
 Conversation persistence:
-  → On page reload: SWR re-fetches all messages for the session
-  → Full history is preserved indefinitely (user can delete via dashboard)
+  → On page reload: SWR re-fetches all messages for the session, including each assistant
+    message's persisted source_type, so attribution survives reload
+  → Full history is preserved indefinitely (user can delete via dashboard); only the most
+    recent 10 or 20 turns are ever sent to the model per request, per classification
 ```
 
 ---
@@ -826,25 +834,66 @@ type ExtractionOutput = { terms: ExtractionTerm[] }
 
 ### Feature B: Contract Chat (Q&A)
 
-**Goal:** Answer plain-English questions about the uploaded contract strictly using the document text, with mandatory page citation.
+**Goal:** Answer plain-English questions about the uploaded contract strictly using the document text and/or the prior conversation, with mandatory source attribution.
 
-**Prompt technique:** RAG-style full-context injection (entire contract text passed as context). No vector retrieval at MVP — full text for ≤ 15,000 token contracts fits comfortably in 128k context window.
+**Prompt technique:** RAG-style context injection, gated by query classification (a conversation memory layer — see `docs/specs/06-contract-chat.md` for the full design). No vector retrieval at MVP — full contract text for ≤ 15,000 token contracts fits comfortably in the 128k context window whenever it's included at all.
 
-**Parameters:**
+**Query classification (inline heuristic, no extra API call) — computed first, before retrieval:**
+- If the message matches history-referencing markers ("earlier", "before", "previously", "you said", "what have I asked", etc.) and not contract-specific markers → type: `history`
+- If the message matches contract-specific nouns (clause, section, page, payment, liability, termination, etc.) and not history markers → type: `contract`
+- If it matches both, or neither (ambiguous) → type: `both` (never a silent narrower default — `both`'s retrieval is a superset of `contract`'s, so falling back here never drops context)
+
+**Retrieval per classification** — this is the part that changed from the original always-send-everything design: classification now genuinely changes what's retrieved, not just a prompt preamble hint.
+
+| Type | Contract text | History window |
+|---|---|---|
+| `contract` | Included | last 10 turns |
+| `history` | **Excluded** | last 20 turns |
+| `both` | Included | last 10 turns |
+
+(A "turn" = one user + one assistant message.)
+
+**Parameters (unchanged across all three classifications):**
 - `temperature`: 0.4 (slightly warmer for natural conversational responses)
 - `max_tokens`: 1000 (concise answers)
 - `response_format`: default (free text)
 
-**System prompt (chat):**
+**System prompt (chat) — one per classification, not one shared template:**
 
+`contract`:
 ```
 You are a legal contract assistant. Answer questions ONLY from the contract text provided below.
 
 RULES:
 1. Every answer must include a citation in the format [Page X] where X is the page number from the document.
 2. If the answer is not in the document, say: "I cannot find this in the document."
-3. Begin every answer with "Based on the document," to make the scope clear.
-4. Do NOT use general legal knowledge. Do NOT answer from memory.
+3. Do NOT use general legal knowledge. Do NOT answer from memory.
+4. Do NOT give legal advice. If asked for advice, say: "I can help you understand what the document says, but for legal advice, please consult a qualified lawyer."
+
+CONTRACT TEXT:
+{contract_text}
+```
+
+`history` (no contract text in the prompt at all):
+```
+You are a legal contract assistant. Answer ONLY using the prior conversation shown below — you have not been given the contract text for this question.
+
+RULES:
+1. Base your answer strictly on what was said earlier in this conversation.
+2. If the conversation does not contain the answer, say: "I cannot find this in our conversation."
+3. End every answer with the tag [From conversation].
+4. Do NOT give legal advice. If asked for advice, say: "I can help you understand what the document says, but for legal advice, please consult a qualified lawyer."
+```
+
+`both`:
+```
+You are a legal contract assistant. Answer using the contract text and the prior conversation below, whichever is relevant.
+
+RULES:
+1. For any fact drawn from the contract, cite it in the format [Page X].
+2. For any fact drawn from the prior conversation rather than the contract itself, tag it with [From conversation].
+3. If the question can't be answered from either source, say: "I cannot find this in the document or our conversation."
+4. Do NOT use general legal knowledge beyond what's in the contract or the conversation.
 5. Do NOT give legal advice. If asked for advice, say: "I can help you understand what the document says, but for legal advice, please consult a qualified lawyer."
 
 CONTRACT TEXT:
@@ -854,19 +903,13 @@ CONTRACT TEXT:
 **Message array construction:**
 ```
 [
-  { role: "system", content: "<system_prompt_with_contract_text>" },
-  { role: "user",   content: "<first user message>" },
-  { role: "assistant", content: "<first AI response>" },
-  ... (up to 200 messages ascending),
+  { role: "system", content: "<classification-specific prompt above>" },
+  ...trimmed chat history (10 or 20 turns, ascending)...,
   { role: "user",   content: "<current user message>" }
 ]
 ```
 
-**Query classification (inline, no extra API call):**
-- If user message contains "earlier", "before", "previous", "you said" → type: `history`
-- If user message contains contract-specific nouns → type: `contract`
-- Default → type: `both`
-- Classification adjusts the system prompt preamble (no structural change to context inclusion)
+The full history is always fetched from the DB *before* the new user message is written (so classification/retrieval never see the message-in-progress as history), then trimmed to the classification's window — see `docs/specs/06-contract-chat.md` §3.2.
 
 ---
 
@@ -894,9 +937,11 @@ CONTRACT TEXT:
 | Max input tokens per extraction call | ~15,000 (contract) + ~3,000 (few-shot + prompt) = ~18,000 input tokens |
 | Max output tokens per extraction | 2,000 |
 | Estimated cost per extraction | ~18k input × $0.005/1k + 1.5k output × $0.015/1k ≈ **$0.11** |
-| Max input tokens per chat turn | ~15,000 (contract) + ~8,000 (200 history messages) + ~500 (prompt) = ~23,500 |
+| Max input tokens per chat turn (`contract`/`both`) | ~15,000 (contract) + ~3,000 (10-turn/20-message history) + ~400 (prompt) ≈ 18,400 |
+| Max input tokens per chat turn (`history`) | 0 (no contract text) + ~6,000 (20-turn/40-message history) + ~250 (prompt) ≈ 6,250 |
 | Max output tokens per chat | 1,000 |
-| Estimated cost per chat turn | ~23.5k × $0.005 + 0.8k × $0.015 ≈ **$0.13** |
+| Estimated cost per chat turn (`contract`/`both`) | ~18.4k × $0.005 + 0.8k × $0.015 ≈ **$0.10** |
+| Estimated cost per chat turn (`history`) | ~6.25k × $0.005 + 0.8k × $0.015 ≈ **$0.04** |
 | Total budget per contract session | ≤ $0.25 (extraction + ~1 chat turn); more chat turns within session are additive |
 | Alert threshold | OpenAI spend alert at 80% of monthly budget via OpenAI usage alerts |
 | Contract rejection | Contracts > 15,000 tokens rejected before any OpenAI call |
@@ -1012,7 +1057,7 @@ contract_type:  string  ("nda" | "msa")
 
 ### POST `/api/chat`
 
-**Purpose:** Send a user chat message and return a GPT-4o response grounded in the contract text.
+**Purpose:** Send a user chat message and return a GPT-4o response grounded in the contract text and/or conversation history, per classification (see the conversation memory layer in §8, Feature B, and `docs/specs/06-contract-chat.md`).
 
 **Auth:** Required
 
@@ -1025,19 +1070,21 @@ contract_type:  string  ("nda" | "msa")
 ```
 
 **Processing:**
-1. Fetch `contract_text` from DB
-2. Fetch or create `chat_session` for this contract
-3. Fetch all `chat_messages` for the session (up to 200, ascending)
-4. Build messages array with system prompt + contract context + history + new message
-5. Call GPT-4o (temp=0.4, max_tokens=1000)
-6. Insert user message into `chat_messages`
-7. Insert AI response into `chat_messages`
+1. Classify the message: `'contract' | 'history' | 'both'` (inline heuristic, no extra API call)
+2. Fetch `contract_text` from DB (for ownership/status validation; only used in the prompt for `contract`/`both`)
+3. Fetch or create `chat_session` for this contract
+4. Fetch up to 40 most-recent `chat_messages` for the session (newest-first, then reversed to ascending) — **before** the new user message is inserted
+5. Build messages array with the classification-specific system prompt + trimmed history (10 turns for `contract`/`both`, 20 turns for `history`) + new message
+6. Call GPT-4o (temp=0.4, max_tokens=1000)
+7. Insert user message into `chat_messages`
+8. Insert AI response into `chat_messages`, tagged with `source_type = <classification>`
 
 **Response 200:**
 ```json
 {
   "message": "Based on the document, the notice period is 30 days written notice to the other party [Page 7].",
-  "session_id": "uuid"
+  "session_id": "uuid",
+  "source_type": "contract"
 }
 ```
 
@@ -1175,11 +1222,12 @@ contract_type:  string  ("nda" | "msa")
 - Original AI value stored in `original_value`; shown in tooltip ("Original: ...")
 - **Acceptance:** Edit saves within 2s; "Edited" badge shown; original AI value preserved
 
-#### US-012: Persistent Chat History (P1)
-- On page load: SWR fetches all `chat_messages` for the session
-- Conversation rendered in chronological order (ascending)
-- Full history passed to OpenAI on every turn (up to 200 messages)
-- **Acceptance:** Reopening contract results page loads previous chat messages
+#### US-012: Persistent Chat History with Conversation Memory (P1)
+- On page load: SWR fetches all `chat_messages` for the session, including each assistant message's `source_type`
+- Conversation rendered in chronological order (ascending), with a source badge per assistant message
+- The most recent 10 or 20 turns (per classification — see §8 Feature B) are passed to OpenAI each turn, not the full history; all messages remain stored and viewable regardless
+- A history-only question (e.g. "what have I asked you so far") is answered from conversation history alone, without contract text in context
+- **Acceptance:** Reopening contract results page loads previous chat messages with attribution intact; a memory-only question is answered correctly from history
 
 ---
 
@@ -1436,7 +1484,7 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 |---|---|
 | `lib/pdf/parse.ts` | `parsePdf()`: `[PAGE N]` marker insertion; word count calculation; token count estimation; scanned PDF guard (< 100 words) |
 | `lib/openai/extract.ts` | `buildExtractionPrompt()`: correct NDA vs MSA term list; custom terms appended; few-shot examples included. `parseExtractionResponse()`: valid JSON → array; malformed JSON → retry; missing fields → handled gracefully |
-| `lib/openai/chat.ts` | `buildChatMessages()`: system prompt includes contract text; history ordered ascending; user message appended last |
+| `lib/openai/chat.ts` | `classifyQuery()`: returns all three classifications, falls back to `both` when ambiguous. `buildChatMessages()`: `history` omits contract text, `contract`/`both` include it; correct 10-/20-turn window applied per classification; history ordered ascending; user message appended last |
 | `components/contract/ConfidenceIndicator.tsx` | Renders green for ≥ 80; amber for 50–79; red + ⚠️ for < 50; tooltip text correct |
 | `components/contract/TermCard.tsx` | Shows "Edited" badge when `is_edited = true`; inline edit input appears on click; calls PATCH on blur/Enter |
 | `middleware.ts` | Unauthenticated requests to protected routes redirect to `/auth/signin` |

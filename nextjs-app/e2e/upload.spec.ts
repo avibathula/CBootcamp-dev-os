@@ -46,6 +46,8 @@ test.describe('Upload', () => {
 
     // Real GPT-4o extraction — allow generous time — then redirect to results.
     await page.waitForURL(/\/contracts\/[a-f0-9-]+$/, { timeout: 45_000 })
-    await expect(page.getByText('Governing Law')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByTestId('key-terms-panel').getByText('Governing Law', { exact: true })).toBeVisible({
+      timeout: 15_000,
+    })
   })
 })
